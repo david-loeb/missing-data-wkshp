@@ -1,0 +1,1890 @@
+---
+title: "Modern Missing Data Handling for Policy Research & RCTs"
+author: "David Loeb<br>loebd@upenn.edu"
+date: "May 12, 2025"
+date-format: long
+format: 
+  revealjs:
+    reference-location: document
+    # chalkboard:  # uncomment to use chalkboard; must set embed-resources: false
+    #  buttons: false  # uncomment if using chalkboard
+    preview-links: true
+    embed-resources: true  # comment out if using chalkboard
+language:
+  en:
+    section-title-footnotes: "References"
+css: slides_files/style.css
+html-math-method: 
+  method: mathjax
+  url: "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"
+---
+
+```{r}
+#| label: setup
+#| include: false
+pacman::p_load(dplyr, gt, ggplot2, tidyr, plotly, flextable)
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 600)
+sysfonts::font_add("roboto", "slides_files/Roboto-Medium.ttf")
+gdtools::register_gfont(family = "Roboto")
+source("slides_files/create_data_pres.R")
+```
+
+## Outline
+
+<br>  
+
+:::: {.columns}
+
+::: {.column}
+1. Types of missingness
+2. Simple methods
+3. Full information maximum likelihood (FIML)
+:::
+
+::: {.column}
+4. Multiple imputation
+5. Recommendations for use
+6. Sensitivity analysis
+:::
+
+::::
+
+## Missing data can create bias
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+```{r}
+set.seed(8)
+df_plt <- tibble(
+  y = c(rnorm(336, 10, 3), rnorm(324, 10, 3) + 1.2),
+  Group = c(rep("Control", 336), rep("Treatment", 324))
+  ) |> 
+  mutate(pctile = percent_rank(y), .by = Group) |> 
+  mutate(
+    miss = case_when(
+      Group == "Control" & pctile <= .34 ~ 1,
+      Group == "Treatment" & pctile <= .08 ~ 1,
+      .default = 0
+    )
+  )
+
+ggplot(df_plt, aes(Group, y)) + 
+  geom_point(position = position_jitter(width = .01, seed = 6)) +
+  stat_summary(
+    fun.y = mean, geom = "point", color = "deepskyblue2", size = 2
+  ) +
+  stat_summary(
+    fun.y = mean, geom = "line", color = "deepskyblue2", aes(group = 1), lwd = 1.5
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    text = element_text(size = 22, family = "roboto")
+  ) +
+  ylab("Outcome")
+```
+:::
+
+::: {.fragment fragment-index=1}
+```{r}
+ggplot(df_plt, aes(Group, y)) + 
+  geom_point(
+    aes(Group, y, color = factor(miss)), 
+    position = position_jitter(width = .01, seed = 6), 
+    show.legend = F
+  ) +
+  stat_summary(
+    fun.y = mean, geom = "point", color = "deepskyblue2", size = 2
+  ) +
+  stat_summary(
+    fun.y = mean, geom = "line", color = "deepskyblue2", aes(group = 1), lwd = 1.5
+  ) +
+  theme_minimal() +
+  scale_color_discrete(type = c("black", "gray")) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    text = element_text(size = 22, family = "roboto")
+  ) +
+  ylab("Outcome")
+```
+:::
+
+::: {.fragment fragment-index=2}
+```{r}
+ggplot(df_plt, aes(Group, y)) + 
+  geom_point(
+    aes(Group, y, color = factor(miss)), 
+    position = position_jitter(width = .01, seed = 6), 
+    show.legend = F
+  ) +
+  stat_summary(
+    fun.y = mean, geom = "point", color = "deepskyblue2", size = 2
+  ) +
+  stat_summary(
+    fun.y = mean, geom = "line", color = "deepskyblue2", aes(group = 1), lwd = 1.5
+  ) +
+  stat_summary(
+    data = filter(df_plt, miss == 0), 
+    fun.y = mean, 
+    geom = "point", 
+    color = "darkorchid", 
+    size = 2
+  ) +
+  stat_summary(
+    data = filter(df_plt, miss == 0), 
+    fun.y = mean, 
+    geom = "line", 
+    color = "darkorchid", 
+    aes(group = 1),
+    lwd = 1.5
+  ) +
+  theme_minimal() +
+  scale_color_discrete(type = c("black", "gray")) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    text = element_text(size = 22, family = "roboto")
+  ) +
+  ylab("Outcome")
+```
+:::
+:::
+
+## Types of missingness {.smaller .scrollable}
+
+<!-- Note: if using chalkboard, add this to the header options above: chalkboard-buttons="true" -->
+
+::: {.panel-tabset}
+
+### Overview
+
+- 3 types of missingness
+- Each has unique implications for bias stemming from missing data
+- Missing data strategies make assumptions about types of missingness
+- Types of missingness are untestable
+
+### MCAR
+
+Missing Completely At Random: Prob(miss) has no relationship with missing var
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+```{r}
+ggplot(df, aes(x, y_post)) +
+  geom_point(aes(color = factor(miss_mcar))) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing")
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  ylab("Test Score") +
+  xlab("Income") +
+  ylim(0, 25)
+```
+$\textcolor[rgb]{1.0,1.0,1.0}{space}$
+:::
+
+::: {.fragment fragment-index=1}
+```{r}
+ggplot(df, aes(x, y_plt_mcar)) +
+  geom_point(aes(color = factor(miss_mcar))) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing")
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  ylab("Test Score") +
+  xlab("Income") +
+  ylim(0, 25)
+```
+$\textcolor[rgb]{1.0,1.0,1.0}{space}$
+:::
+:::
+
+### MAR
+
+(Conditionally) Missing At Random: P(miss) & missing var relation explained by other vars
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+```{r}
+ggplot(df, aes(x, y_post)) +
+  geom_point(aes(color = factor(miss_mar.x))) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing")
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  ylab("Test Score") +
+  xlab("Income") +
+  ylim(0, 25)
+```
+$P(miss_{test}) = f(income)$
+:::
+
+::: {.fragment fragment-index=1}
+```{r}
+ggplot(df, aes(x, y_plt_mar.x)) +
+  geom_point(aes(color = factor(miss_mar.x))) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing")
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  ylab("Test Score") +
+  xlab("Income") +
+  ylim(0, 25)
+```
+$P(miss_{test}) = f(income)$
+:::
+:::
+
+### MNAR
+
+Missing Not At Random: P(miss) related to missing var, independent of other model vars
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+```{r}
+ggplot(df, aes(x, y_post)) +
+  geom_point(aes(color = factor(miss_mnar))) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing")
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  ylab("Test Score") +
+  xlab("Income") +
+  ylim(0, 25)
+```
+$P(miss_{test}) = f(test)$
+:::
+
+::: {.fragment fragment-index=1}
+```{r}
+ggplot(df, aes(x, y_plt_mnar)) +
+  geom_point(aes(color = factor(miss_mnar))) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing")
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  ylab("Test Score") +
+  xlab("Income") +
+  ylim(0, 25)
+```
+$P(miss_{test}) = f(test)$
+:::
+:::
+
+:::
+
+# Simple Methods
+
+## Listwise deletion {.smaller}
+
+::: {.panel-tabset}
+
+### Overview
+
+- Drop observations missing on any variables in model
+- Only unbiased when data are MCAR
+- But can perform well in certain other situations, depending on
+  - What variables are missing
+  - Missingness mechanism
+
+### Missing Y
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+```{r}
+ggplot(df, aes(x, y_post)) +
+  geom_point(aes(color = factor(miss_mar.x_rand))) +
+  geom_smooth(
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing Y")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income")
+```
+:::
+
+::: {.fragment fragment-index=1}
+```{r}
+ggplot(df, aes(x, y_post)) +
+  geom_point(aes(color = factor(miss_mar.x_rand))) +
+  geom_smooth(
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing Y")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .104", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .005", family = "roboto", size = 6)
+```
+:::
+
+::: {.fragment fragment-index=2}
+```{r}
+ggplot(df, aes(x, y_plt_mar.x_rand)) +
+  geom_point(aes(color = factor(miss_mar.x_rand))) +
+  geom_smooth(
+    data = filter(df, miss_mar.x_rand == 0), 
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing Y")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .102", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .008", family = "roboto", size = 6)
+```
+:::
+
+::: {.fragment fragment-index=3}
+```{r}
+ggplot(filter(df, miss_mar.x_rand == 0), aes(x, y_post)) +
+  geom_point(aes(color = factor(1 - miss_mar.x_rand))) +
+  geom_smooth(
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing Y")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .102", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .008", family = "roboto", size = 6)
+```
+:::
+:::
+
+$P(miss_{test}) = f(income)$
+
+### Missing X
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+```{r}
+ggplot(df, aes(x, y_post)) +
+  geom_point(aes(color = factor(miss_mar.y_pre))) +
+  geom_smooth(
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "deeppink"),
+    labels = c("Complete", "Missing X")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .104", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .005", family = "roboto", size = 6)
+```
+:::
+
+::: {.fragment fragment-index=1}
+```{r}
+ggplot(df, aes(x_plt_mar.y_pre, y_post)) +
+  geom_point(aes(color = factor(miss_mar.y_pre))) +
+  geom_smooth(
+    data = filter(df, miss_mar.y_pre == 0), 
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "deeppink"),
+    labels = c("Complete", "Missing X")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .071", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .006", family = "roboto", size = 6)
+```
+:::
+
+::: {.fragment fragment-index=2}
+```{r}
+ggplot(filter(df, miss_mar.y_pre == 0), aes(x, y_post)) +
+  geom_point(aes(color = factor(1 - miss_mar.y_pre))) +
+  geom_smooth(
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "deeppink"),
+    labels = c("Complete", "Missing X")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .071", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .006", family = "roboto", size = 6)
+```
+:::
+:::
+
+$P(miss_{income}) = f(test)$
+
+### Missing Y & X
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+```{r}
+df <- df |> 
+  mutate(
+    miss_x = case_when(
+      miss_mar.x_rand == 1 ~ "b",
+      miss_mar.y_pre == 1 ~ "c",
+      miss_mar.x_rand == 0 ~ "a"
+    )
+  )
+ggplot(df, aes(x, y_post)) +
+  geom_point(aes(color = miss_x)) +
+  geom_smooth(
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2", "deeppink"),
+    labels = c("Complete", "Missing Y", "Missing X")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .104", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .005", family = "roboto", size = 6)
+```
+:::
+
+::: {.fragment fragment-index=1}
+```{r}
+ggplot(df, aes(x_plt_mar.y_pre, y_plt_mar.x_rand)) +
+  geom_point(aes(color = miss_x)) +
+  geom_smooth(
+    data = filter(df, miss_mar.x_rand == 0 & miss_mar.y_pre == 0), 
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2", "deeppink"),
+    labels = c("Complete", "Missing Y", "Missing X")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .057", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .011", family = "roboto", size = 6)
+```
+:::
+
+::: {.fragment fragment-index=2}
+```{r}
+ggplot(
+  filter(df, miss_mar.x_rand == 0 & miss_mar.y_pre == 0), 
+  aes(x_plt_mar.y_pre, y_plt_mar.x_rand)
+  ) +
+  geom_point(aes(color = miss_x)) +
+  geom_smooth(method = "lm", se = F, fullrange = T, color = "black") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(type = "deepskyblue2", labels = "Complete") +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .057", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .011", family = "roboto", size = 6)
+```
+:::
+:::
+
+$P(miss_{test}) = f(income)$, $P(miss_{income}) = f(test)$
+
+### RCT
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+```{r}
+ggplot(df, aes(x, y_post, color = factor(treat, levels = c(1, 0)))) +
+  geom_point() +
+  geom_abline(
+    intercept = 2.225595, slope = 0.101732, color = "deepskyblue4", lwd = 1
+  ) +
+  geom_abline(
+    intercept = 2.225595 + 2.910529, slope = 0.101732, color = "deeppink3", lwd = 1
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deeppink", "deepskyblue2"), 
+    labels = c("Treat", "Control")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  ggtitle("Complete Data") +
+  annotate("text", x = 25, y = 23, label = "ATE = 2.91", family = "roboto", size = 6) +
+  annotate("text", x = 26.8, y = 20, label = "SE = 0.18", family = "roboto", size = 6)
+```
+
+$\textcolor[rgb]{1.0,1.0,1.0}{space}$
+:::
+
+::: {.fragment .fade-in-then-out fragment-index=1}
+```{r}
+ggplot(
+  filter(df, miss_mar.x_trt == 0), 
+  aes(x, y_post, color = factor(treat, levels = c(1, 0)))
+  ) +
+  geom_point() +
+  geom_abline(
+    intercept = 2.096107, slope = 0.102137, color = "deepskyblue4", lwd = 1
+  ) +
+  geom_abline(
+    intercept = 2.096107 + 3.074620, slope = 0.102137, color = "deeppink3", lwd = 1
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deeppink", "deepskyblue2"), 
+    labels = c("Treat", "Control")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  ggtitle("Missing Y") +
+  annotate("text", x = 25, y = 23, label = "ATE = 3.07", family = "roboto", size = 6) +
+  annotate("text", x = 26.8, y = 20, label = "SE = 0.22", family = "roboto", size = 6)
+```
+
+$P(miss_{test}) = f(income, treat)$
+:::
+
+::: {.fragment .fade-in-then-out fragment-index=2}
+```{r}
+ggplot(
+  filter(df, miss_mar.x_trt == 0 & miss_mar.y_pre == 0), 
+  aes(x, y_post, color = factor(treat, levels = c(1, 0)))
+  ) +
+  geom_point() +
+  geom_abline(
+    intercept = 4.955740, slope = 0.055940, color = "deepskyblue4", lwd = 1
+  ) +
+  geom_abline(
+    intercept = 4.955740 + 2.992607, slope = 0.055940, color = "deeppink3", lwd = 1
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deeppink", "deepskyblue2"), 
+    labels = c("Treat", "Control")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  ggtitle("Missing Y & X") +
+  annotate("text", x = 25, y = 23, label = "ATE = 2.99", family = "roboto", size = 6) +
+  annotate("text", x = 26.8, y = 20, label = "SE = 0.20", family = "roboto", size = 6)
+```
+
+$P(miss_{test}) = f(income, treat)$, $P(miss_{income}) = f(test_{pre})$
+:::
+
+::: {.fragment .fade-in-then-out fragment-index=3}
+```{r}
+ggplot(
+  filter(df, miss_mar.y_pre_trt == 0), 
+  aes(x, y_post, color = factor(treat, levels = c(1, 0)))
+  ) +
+  geom_point() +
+  geom_abline(
+    intercept = 4.152437, slope = 0.072483, color = "deepskyblue4", lwd = 1
+  ) +
+  geom_abline(
+    intercept = 4.152437 + 1.878091, slope = 0.072483, color = "deeppink3", lwd = 1
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deeppink", "deepskyblue2"), 
+    labels = c("Treat", "Control")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  ggtitle("Missing X related to treatment") +
+  annotate("text", x = 25, y = 23, label = "ATE = 1.88", family = "roboto", size = 6) +
+  annotate("text", x = 26.8, y = 20, label = "SE = 0.18", family = "roboto", size = 6)
+```
+
+$P(miss_{income}) = f(test_{pre}, treat)$
+:::
+:::
+
+### Key Points
+
+Positives
+
+- If data are MCAR: Unbiased
+- If P(missing) is independent of Y, conditional on X: Reg coefs unbiased
+- If data missing in Y only: Reg coefs equiv to FIML/MI
+- If P(miss X) ind. of treatment in RCT, treat effect may be estimated well
+
+Negatives
+
+- Throwing out data, so always lose power
+- Means & variances biased unless data are MCAR
+- If missing X depends on Y: Reg coefs biased
+
+Check out [this tool](http://s9l7w2-david-loeb.shinyapps.io/missing-data/) for more RCT scenarios
+
+:::
+
+## Mean imputation {.smaller}
+
+::: {.panel-tabset}
+
+### Overview
+
+- Impute missing data with a constant (typically the sample mean)
+- Add a binary missing data indicator to the model
+- Biased under any missingness mechanism
+- But can still perform well in specific RCT situations
+
+### Miss Y
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+```{r}
+#| message: false
+ggplot(df, aes(x, y_post)) +
+  geom_point(aes(color = factor(miss_mar.x_rand))) +
+  geom_smooth(
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing Y")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .104", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .005", family = "roboto", size = 6)
+```
+:::
+
+::: {.fragment fragment-index=1}
+```{r}
+#| message: false
+ggplot(df, aes(x, y_imp_mean.x_rand)) +
+  geom_point(aes(color = factor(miss_mar.x_rand))) +
+  geom_smooth(
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing Y")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .043", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .005", family = "roboto", size = 6)
+```
+:::
+:::
+
+### Miss X
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+```{r}
+#| message: false
+ggplot(df, aes(x, y_post)) +
+  geom_point(aes(color = factor(miss_mar.y_pre))) +
+  geom_smooth(
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing X")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .104", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .005", family = "roboto", size = 6)
+```
+:::
+
+::: {.fragment fragment-index=1}
+```{r}
+#| message: false
+ggplot(df, aes(x_imp_mean.y_pre, y_post)) +
+  geom_point(aes(color = factor(miss_mar.y_pre))) +
+  geom_smooth(
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing X")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .071", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .008", family = "roboto", size = 6)
+```
+:::
+:::
+
+### RCT
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+```{r}
+ggplot(df, aes(x, y_post, color = factor(treat, levels = c(1, 0)))) +
+  geom_point() +
+  geom_abline(
+    intercept = 2.225595, slope = 0.101732, color = "deepskyblue4", lwd = 1
+  ) +
+  geom_abline(
+    intercept = 2.225595 + 2.910529, slope = 0.101732, color = "deeppink3", lwd = 1
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deeppink", "deepskyblue2"), 
+    labels = c("Treat", "Control")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  #ggtitle("Complete Data") +
+  annotate("text", x = 25, y = 23, label = "ATE = 2.91", family = "roboto", size = 6) +
+  annotate("text", x = 26.8, y = 20, label = "SE = 0.18", family = "roboto", size = 6)
+```
+
+$\textcolor[rgb]{1.0,1.0,1.0}{space}$
+:::
+
+::: {.fragment .fade-in-then-out fragment-index=1}
+```{r}
+ggplot(
+  filter(df, miss_mar.x_trt == 0), 
+  aes(x_imp_mean.y_pre, y_post, color = factor(treat, levels = c(1, 0)))
+  ) +
+  geom_point() +
+  geom_abline(
+    intercept = 5.449731, slope = 0.053377, color = "deepskyblue4", lwd = 1
+  ) +
+  geom_abline(
+    intercept = 5.449731 + 3.060717, slope = 0.053377, color = "deeppink3", lwd = 1
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deeppink", "deepskyblue2"), 
+    labels = c("Treat", "Control")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  #ggtitle("Missing X & Y") +
+  annotate("text", x = 25, y = 23, label = "ATE = 3.06", family = "roboto", size = 6) +
+  annotate("text", x = 26.8, y = 20, label = "SE = 0.17", family = "roboto", size = 6)
+```
+
+$P(miss_{income}) = f(test_{pre})$
+:::
+
+::: {.fragment fragment-index=2}
+```{r}
+ggplot(
+  filter(df, miss_mar.x_trt == 0), 
+  aes(x_imp_mean.y_pre_trt, y_post, color = factor(treat, levels = c(1, 0)))
+  ) +
+  geom_point() +
+  geom_abline(
+    intercept = 6.416058, slope = 0.048633, color = "deepskyblue4", lwd = 1
+  ) +
+  geom_abline(
+    intercept = 6.416058 + 1.464675, slope = 0.048633, color = "deeppink3", lwd = 1
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deeppink", "deepskyblue2"), 
+    labels = c("Treat", "Control")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  #ggtitle("Missing X & Y") +
+  annotate("text", x = 25, y = 23, label = "ATE = 1.46", family = "roboto", size = 6) +
+  annotate("text", x = 26.8, y = 20, label = "SE = 0.18", family = "roboto", size = 6)
+```
+
+$P(miss_{income}) = f(test_{pre}, treat)$
+:::
+:::
+
+### Key Points
+
+- Attenuates reg coef of missing variables
+- Biased under any missingness mechanism
+- Can be acceptable for imputing baseline covariates in RCTs
+  - If P(miss) unrelated to treatment
+  - Better power than listwise deletion but riskier
+
+:::
+
+## Regression imputation {.smaller}
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+```{r}
+#| message: false
+ggplot(df, aes(x, y_post)) +
+  geom_point(aes(color = factor(miss_mar.x)), size = 2) +
+  geom_smooth(
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing Y")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .1045", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .0054", family = "roboto", size = 6)
+```
+:::
+
+::: {.fragment fragment-index=1}
+```{r}
+ggplot(df, aes(x, y_imp_reg_x.x)) +
+  geom_point(aes(color = factor(miss_mar.x)), size = 2) +
+  geom_smooth(
+    method = "lm", se = F, fullrange = T, color = "black"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 20, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"), 
+    breaks = c(25, 50, 75, 100, 125),
+    limits = c(10, 160)
+  ) +
+  scale_color_discrete(
+    type = c("deepskyblue2", "darkorchid2"),
+    labels = c("Complete", "Missing Y")
+  ) +
+  ylim(0, 25) +
+  ylab("Test Score") +
+  xlab("Income") +
+  annotate("text", x = 35, y = 25, label = "Slope = .1075", family = "roboto", size = 6) +
+  annotate("text", x = 38.5, y = 22, label = "SE = .0047", family = "roboto", size = 6)
+```
+:::
+:::
+
+# Full Information Maximum Likelihood (FIML)
+
+## Normal distribution
+
+```{r}
+ggplot(data.frame(x = c(0, 23)), aes(x = x)) +
+  geom_line(
+    aes(x = c(11.5, 11.5), y = c(0, .014)), lty = "dashed"
+  ) +
+  geom_line(
+    aes(x = c(11.5, 11.5), y = c(.03, .083)), lty = "dashed"
+  ) +
+  geom_line(
+    aes(x = c(11.5, 11.5), y = c(.098, .115)), lty = "dashed"
+  ) +
+  stat_function(fun = dnorm, args = list(mean = 11.5, sd = 3.4)) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 22, family = "roboto")
+  ) + 
+  annotate(
+    "text", x = 11.5, y = .09, label = "Mean = 11.5", size = 16/.pt,
+    family = "roboto"
+  ) +
+  annotate(
+    "text", x = 11.5, y = .02, label = "|---------- SD = 3.4 ----------|",
+    size = 16/.pt,
+    family = "roboto"
+  ) +
+  xlab("Test Score") +
+  ylab("Probability Density")
+```
+
+## Multivariate normal distribution
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+```{r}
+#| message: false
+
+df$zero <- 0
+
+dens_x_input <- seq(min(df$x), max(df$x), by = .1)
+dens_x <- dnorm(dens_x_input, mean(df$x), sd(df$x))
+df_dens_x <- data.frame(x = dens_x_input, dens_x = dens_x, y = max(df$y_post))
+
+dens_y_input <- seq(min(df$y_post), max(df$y_post), by = .05)
+dens_y <- dnorm(dens_y_input, mean(df$y_post), sd(df$y_post)) / 4
+df_dens_y <- data.frame(y = dens_y_input, dens_y = dens_y, x = max(df$x))
+
+plot_ly(
+  df,
+  x = ~x, y = ~y_post, z = ~zero,
+  type = "scatter3d",
+  mode = "markers",
+  marker = list(size = 2),
+  color = I("deepskyblue2")
+  ) |> 
+  add_trace(
+    data = df_dens_x, 
+    x = ~x, y = ~y, z = ~dens_x, 
+    type = "scatter3d", mode = "lines", line = list(shape = "spline"),
+    color = I("darkorchid2")
+  ) |> 
+  add_trace(
+    data = df_dens_y, 
+    x = ~x, y = ~y, z = ~dens_y, 
+    type = "scatter3d", mode = "lines", line = list(shape = "spline"),
+    color = I("deeppink")
+  ) |> 
+  layout(
+    scene = list(
+      zaxis = list(range = c(0,.03), showticklabels = F, title = "Density"),
+      xaxis = list(
+        range = c(0, max(df$x)), 
+        title = "Income", 
+        ticktext = list("$20k", "$50k", "$75k", "$100k", "$125k"),
+        tickvals = list(25, 50, 75, 100, 125)
+      ),
+      yaxis = list(
+        range = c(0, max(df$y_post)), 
+        title = "Test Score",
+        tickvals = list(5, 10, 15, 20)
+      ),
+      aspectratio = list(x = 1, y = 1, z = .7),
+      camera = list(eye = list(x = -1.55, y = -1.55, z = 1.55))
+    ),
+    showlegend = F
+  ) |> 
+  config(
+    modeBarButtonsToRemove = c(
+      "zoom3d", "pan3d", "orbitRotation", "tableRotation",
+      "resetCameraDefault3d", "hoverClosest3d"
+    ),
+    displaylogo = F
+  )
+```
+:::
+
+::: {.fragment fragment-index=1}
+
+```{r}
+# Input values for X & Y (setup so each has 501 values)
+dens_x_input <- seq(min(df$x), max(df$x), by = 0.2775862)
+dens_y_input <- seq(min(df$y_post), max(df$y_post), by = 0.0418653)
+mu <- c(mean(df$x), mean(df$y_post))  # mean vector
+sigma <- matrix(  # variance-covariance matrix
+  c(var(df$x), cov(df$x, df$y_post), cov(df$x, df$y_post), var(df$y_post)),
+  ncol = 2
+)
+
+f <- function(dens_x_input, dens_y_input) {  # create function to feed to outer
+  mnormt::dmnorm(cbind(dens_x_input, dens_y_input), mu, sigma)
+}
+z_test <- outer(dens_x_input, dens_y_input, f)  # generate surface matrix
+
+plt_mv_curve <- plot_ly(z = ~z_test, x = ~dens_x_input, y = ~dens_y_input) |> 
+  add_surface() |> 
+  layout(
+    scene = list(
+      zaxis = list(title = "Density", tickvals = list(.001, .002, .003)),
+      xaxis = list(
+        range = c(0, max(df$x)), 
+        title = "Income", 
+        ticktext = list("$20k", "$50k", "$75k", "$100k", "$125k"),
+        tickvals = list(25, 50, 75, 100, 125)
+      ),
+      yaxis = list(
+        range = c(0, max(df$y_post)), 
+        title = "Test Score",
+        tickvals = list(5, 10, 15, 20)
+      ),
+      aspectratio = list(x = 1, y = 1, z = .7),
+      camera = list(eye = list(x = -1.55, y = -1.55, z = 1.55))
+    )
+  ) |> 
+  hide_colorbar() |> 
+  config(
+    modeBarButtonsToRemove = c(
+      "zoom3d", "pan3d", "orbitRotation", "tableRotation",
+      "resetCameraDefault3d", "hoverClosest3d"
+    ),
+    displaylogo = F
+  )
+plt_mv_curve
+```
+:::
+:::
+
+## Maximum likelihood
+
+- We want to find the means, variances, and covariances that create distributions that most closely match our sample of data
+- Start with mean, variance, and covar parameters which create a multivariate normal distribution:
+
+```{r}
+data.frame(
+  Variable = c("Income", "Test Score"),
+  Mean = c("$84k", "11.5"),
+  Variance = c("$400k", "12"),
+  Covar = "40"
+) |> 
+  flextable() |> 
+  merge_at(i = 1:2, j = 4) |> 
+  font(fontname = "Roboto", part = "all") |> 
+  fontsize(size = 22, part = "all") |> 
+  align_text_col("center") |> 
+  width(1, 1.8) |> 
+  set_header_labels(values = list(Variable = ""))
+```
+
+- Based on these, we can generate a multivariate normal curve
+
+## Everyone gets a likelihood {.smaller .scrollable}
+
+- We compute a number called a likelihood for each observation in our sample
+- How high does each person get on the mv normal curve given their data?
+
+```{r}
+plt_mv_curve
+```
+
+. . .
+
+- Multiply everyone's likelihood to get total likelihood score for that specific multivariate normal distribution
+- See if we can increase our likelihood score by changing the distribution parameters
+
+## But don't we want regression coefficients? {.smaller}
+
+- Yes! The means, vars & covars are functions of regression parameters
+- Our regression equation is: $test_i = \beta_0 + \beta_1income_i + \epsilon_i$
+- Income now has it's own equation too: $income_i = \mu + e_i$
+
+. . .
+
+- Our means are:
+  - Income: $\mu$, the sample income mean
+  - Test score: $\beta_0 + \beta_1 \mu$
+
+. . .
+
+- Our variance & covariances are:
+  - Income variance: $\sigma^2_{e}$, the sample income variance
+  - Income-test score covariance: $\beta_1 \sigma^2_{e}$
+  - Test score variance: $\beta_1^2 \sigma^2_{\zeta} + \sigma^2_{\epsilon}$
+  
+## Full information maximum likelihood (FIML)
+
+- We can still compute a likelihood for a person even if they are missing some data
+- We use only their observed data
+
+## Partial data helps accuracy
+
+<!-- Note: if using chalkboard, add this next to the header above: {chalkboard-buttons="true"} -->
+
+<br>  
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+
+```{r}
+#| warning: false
+ggplot(df, aes(x, y_post)) +
+  geom_hline(yintercept = mean(df$y_post), lty = "dashed") +
+  geom_vline(xintercept = mean(df$x), lty = "dashed") +
+  geom_point(aes(color = factor(miss_mar.x)), show.legend = F) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 18, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_color_discrete(type = c("deepskyblue2", "darkorchid2")) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"),
+    limits = c(10, 160),
+    breaks = c(25, 50, 75, 100, 125)
+  ) +
+  ylab("Test Score") +
+  xlab("Income") +
+  ylim(0, 25) +
+  geom_point(aes(x = mean(x), y = mean(y_post)), size = 4)
+```
+:::
+
+::: {.fragment fragment-index=1}
+```{r}
+#| warning: false
+filter(df, miss_mar.x == 0) |> 
+  ggplot(aes(x, y_post)) +
+  geom_hline(yintercept = mean(df$y_post), lty = "dashed") +
+  geom_vline(xintercept = mean(df$x), lty = "dashed") +
+  geom_point(aes(color = factor(miss_mar.x)), show.legend = F) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 18, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_color_discrete(type = c("deepskyblue2", "darkorchid2")) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"),
+    limits = c(10, 160),
+    breaks = c(25, 50, 75, 100, 125)
+  ) +
+  ylab("Test Score") +
+  xlab("Income") +
+  ylim(0, 25) +
+  geom_point(aes(x = mean(x), y = mean(y_post)), size = 4)
+```
+:::
+
+::: {.fragment fragment-index=2}
+```{r}
+#| warning: false
+ggplot(df, aes(x, y_plt_mar.x)) +
+  geom_hline(yintercept = mean(df$y_post), lty = "dashed") +
+  geom_vline(xintercept = mean(df$x), lty = "dashed") +
+  geom_point(aes(color = factor(miss_mar.x)), show.legend = F) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 18, family = "roboto"),
+    legend.title = element_blank()
+  ) +
+  scale_color_discrete(type = c("deepskyblue2", "darkorchid2")) +
+  scale_x_continuous(
+    labels = scales::dollar_format(suffix = "K"),
+    limits = c(10, 160),
+    breaks = c(25, 50, 75, 100, 125)
+  ) +
+  ylab("Test Score") +
+  xlab("Income") +
+  ylim(0, 25) +
+  geom_point(aes(x = mean(x), y = mean(y_post)), size = 4)
+```
+:::
+:::
+
+## Limitations of FIML
+
+- Assumes multivariate normal distribution for missing data
+- This is violated when:
+  - Missing multicategorical predictors
+  - Model contains nonlinearities (eg interactions, polynomials) w/ missing data
+
+# Multiple Imputation
+
+## Multiple imputation is Bayesian
+
+- Bayesian approach shares similarities with maximum likelihood
+- Both focused on parameters that characterize probability distributions
+- Bayes breaks down estimation into simpler individual steps
+- Estimates are samples drawn from probability distributions
+
+## Markov chain Monte Carlo (MCMC)
+
+- Algorithm that estimates each unknown (model parameters, missing data) one at a time, holding other quantities constant
+- The full cycle repeats thousands of times
+- Think of it like this:
+  - Impute missing values, conditional on model parameters
+  - Estimate model parameters, conditional on imputed data
+  - Repeat
+
+## Missing data values are sampled {.smaller}
+
+Missing data are imputed by randomly sampling values from probability distributions created by model parameters, given individual's observed data
+
+```{r}
+#| message: false
+df$zero <- 0
+
+dens_x_input <- seq(min(df$x), max(df$x), by = .1)
+dens_x <- dnorm(dens_x_input, mean(df$x), sd(df$x)) * 4
+df_dens_x <- data.frame(x = dens_x_input, dens_x = dens_x, y = max(df$y_post))
+
+dens_y_input <- seq(min(df$y_post), max(df$y_post), by = .05)
+dens_y <- dnorm(dens_y_input, mean(df$y_post), sd(df$y_post))
+df_dens_y <- data.frame(y = dens_y_input, dens_y = dens_y, x = max(df$x))
+
+y_sd <- sd(df$y_post)
+mean_50 <- 50 * 0.104463 + 3.436161
+
+dens_input_50 <- seq(mean_50 - 2.6 * y_sd, mean_50 + 2.6 * y_sd, by = .1)
+dens_50 <- dnorm(dens_input_50, mean_50, y_sd)
+df_dens_50 <- data.frame(x = 50, y = dens_input_50, z = dens_50)
+
+reg_input <- data.frame(x = seq(min(df$x), max(df$x), by = .1))
+reg_fit <- predict(lm(y_post ~ x, df), reg_input)
+df_reg <- data.frame(x = reg_input, y = reg_fit, z = 0)
+
+set.seed(6)
+imps <- data.frame(x = 50 + runif(80, 0, 4), y = rnorm(80, mean_50, y_sd - .2), z = 0)
+
+plot_ly(
+  filter(df, miss_mar.x == 0),
+  x = ~x, y = ~y_post, z = ~zero,
+  type = "scatter3d",
+  mode = "markers",
+  marker = list(size = 2),
+  color = I("deepskyblue2")
+  ) |> 
+  add_trace(
+    data = df_dens_50, 
+    x = ~x, y = ~y, z = ~z, 
+    type = "scatter3d", mode = "lines", line = list(shape = "spline"),
+    color = I("darkorchid2")
+  ) |> 
+  add_trace(
+    data = df_reg,
+    x = ~x, y = ~y, z = ~z,
+    type = "scatter3d", mode = "lines", color = I("black")
+  ) |>
+  add_trace(
+    data = imps,
+    x = ~x, y = ~y, z = ~z,
+    type = "scatter3d", mode = "markers", color = I("darkorchid2")
+  ) |>
+  add_trace(
+    data = df_dens_x, 
+    x = ~x, y = ~y, z = ~dens_x, 
+    type = "scatter3d", mode = "lines", line = list(shape = "spline"),
+    color = I("deepskyblue2")
+  ) |> 
+  add_trace(
+    data = df_dens_y, 
+    x = ~x, y = ~y, z = ~dens_y, 
+    type = "scatter3d", mode = "lines", line = list(shape = "spline"),
+    color = I("deepskyblue2")
+  ) |> 
+  layout(
+    scene = list(
+      zaxis = list(range = c(0,.2), showticklabels = F, title = "Density"),
+      xaxis = list(
+        range = c(0, max(df$x)), 
+        title = "Income", 
+        ticktext = list("$20k", "$50k", "$75k", "$100k", "$125k"),
+        tickvals = list(25, 50, 75, 100, 125)
+      ),
+      yaxis = list(
+        range = c(0, max(df$y_post)), 
+        title = "Test Score",
+        tickvals = c(5, 10, 15, 20)
+      ),
+      aspectratio = list(x = 1, y = 1, z = .7),
+      camera = list(eye = list(x = -1.55, y = -1.55, z = 1.55))
+    ),
+    showlegend = F
+  ) |> 
+  config(
+    modeBarButtonsToRemove = c(
+      "zoom3d", "pan3d", "orbitRotation", "tableRotation",
+      "resetCameraDefault3d", "hoverClosest3d"
+    ),
+    displaylogo = F
+  )
+```
+
+## Multiple imputation
+
+- We can save fully imputed datasets created during these cycles
+- Then reanalyze them using frequentist statistics
+- Results will be equivalent to Bayes results
+
+## Types of multiple imputation
+
+- Model agnostic: all model variables predict all others in a round-robin manner
+  - MICE is most popular model agnostic algorithm
+  - Limitations: cannot properly impute data with nonlinearities
+- Model-based: data imputed in context of regression model of interest
+  - Most flexible type - can handle nonlinearities & multicategorical predictors
+
+## Blimp
+
+- Software for doing the Bayesian and/or multiple imputation approach
+- Free, easy to use, amazing user guide, can call via an R package
+- Download here: [appliedmissingdata.com/blimp](https://www.appliedmissingdata.com/blimp)
+
+## Advantages & limitations of Bayes/mutliple imputation
+
+- Bayesian estimation is very flexible, can handle non-normal data and basically any situation you can imagine
+
+But...
+
+- Can take a long time for models to run
+- Convergence can be tricky to troubleshoot
+- Results are sensitive to algorithmic decisions
+
+# Recommendations for Use
+
+## When to use each method
+
+```{r}
+
+text1 <- "
+&nbsp;
+
+- Missing Y only
+- RCT where baseline data collected pre-randomization
+- & power won't be substantially harmed by reduced sample
+- & you only care about regression coefs
+- Always good to run for sensitivity
+
+<br>  
+"
+
+text2 <- "
+&nbsp;
+
+- Anytime you meet multivariate normal assumption, ie no missing multinomial predictors or nonlinearities
+
+<br>  
+"
+
+text3 <- "
+&nbsp;
+
+- If you need to impute multinomial predictors or interactions / polynomials
+- Anytime you don't mind waiting for models to run
+
+<br>  
+"
+
+tibble(
+  method = c("Listwise Deletion", "FIML", "Multiple Imputation"),
+  ease_of_use = c("Easy", "Medium", "Hard"),
+  when_to_use = c(text1, text2, text3)
+) |> 
+  gt() |> 
+  cols_label(
+    method = "Method", ease_of_use = "Ease of Use", when_to_use = "When to Use"
+  ) |> 
+  tab_style(
+    list(cell_fill(color = "seagreen3"), cell_text(align = "center")), 
+    locations = cells_body(columns = ease_of_use, rows = 1)
+  ) |> 
+  tab_style(
+    list(cell_fill(color = "darkorange"), cell_text(align = "center")), 
+    locations = cells_body(columns = ease_of_use, rows = 2)
+  ) |> 
+  tab_style(
+    list(cell_fill(color = "#DE3163"), cell_text(align = "center")), 
+    locations = cells_body(columns = ease_of_use, rows = 3)
+  ) |> 
+  tab_options(table.font.size = 22) |> 
+  opt_table_font("roboto") |> 
+  fmt_markdown(columns = when_to_use) |> 
+  cols_width(3 ~ pct(66))
+```
+
+## Caveats & special cases
+
+- Listwise deletion outperforms FIML/MI in two special cases:^[van Buuren, S. (2018). 2.7 When not to use multiple imputation. Flexible Imputation of Missing Data. https://stefvanbuuren.name/fimd/sec-when.html]
+  - X is MNAR and independent of Y
+  - Logistic regression where missing data are either dichotomous Y or X (but not both) & P(missing) depends only on Y
+- *Factored regression* can enable FIML to handle interactions & polynomials^[Enders, C. K. (2023). Missing data: An update on the state of the art. Psychological Methods. https://doi.org/10.1037/met0000563]
+- *Auxiliary variables* that predict missingness and Y but are not in focal model boost performance of FIML/MI
+
+## Best method is situation dependent
+
+- Always important to consider potential missingness mechanisms
+- Best to take multiple approaches and test sensitivity of results
+- For help thinking through approaches in RCTs, check out [this tool](http://s9l7w2-david-loeb.shinyapps.io/missing-data/)
+
+# Sensitivity Analysis
+
+## What if data are MNAR?
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+- Untestable
+- But can "stress test" model params under MNAR assumptions
+- 2 approaches: pattern mixture model & selection model
+:::
+
+::: {.fragment fragment-index=1}
+- Untestable
+- But can "stress test" model params under MNAR assumptions
+- 2 approaches: **pattern mixture model** & selection model
+:::
+:::
+
+## Pattern mixture model
+
+- Assumption: people missing Y have diff average Y values than those with observed Y
+- Model intercept is combo of the two groups
+
+$$
+test_i = \beta_0 + \beta_1 income_i + \epsilon_i
+$$
+
+. . .
+
+$$
+\beta_0 = \beta_{0(obs)} \times p_{obs} + \beta_{0(miss)} \times p_{miss}
+$$
+$p$ = sample proportion
+
+## How does this assumption affect the intercept?
+
+- Goal: calculate $\beta_0$ under this MNAR assumption
+- Compare to $\beta_0$ from main model (that assumes MAR)
+
+## Estimation Step 1:<br>Add missing indicator to model {.left}
+
+$$
+test_i = \beta_{0(obs)} + \delta miss_i + \beta_1 income_i + \epsilon_i
+$$
+
+$miss_i$ = 1 if missing test data, 0 if observed test data
+
+::: {.fragment fragment-index=1} 
+$\delta = \beta_{0(miss)} - \beta_{0(obs)}$  
+:::
+
+::: {.fragment fragment-index=2}
+- With $\beta_{0(obs)}$ & $\delta$, we can calculate $\beta_0$
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=3}
+$\beta_0 = \beta_{0(obs)} \times p_{obs} + \beta_{0(miss)} \times p_{miss} \textcolor[rgb]{1.0,1.0,1.0}{(\delta + )}$
+:::
+
+::: {.fragment fragment-index=3}
+$\beta_0 = \beta_{0(obs)} \times p_{obs} + (\beta_{0(obs)} + \delta) \times p_{miss}$
+:::
+:::
+:::
+
+::: {.fragment fragment-index=4}
+- Problem: no data to estimate $\delta$
+:::
+
+## Step 2: Plug in difference between groups & compute directly
+
+- Choose an effect size difference in means between groups, use to compute $\delta$
+
+$$
+\delta = d \times \sigma_{test}
+$$
+
+. . .
+
+$d$ = Cohen's D effect size  
+$\sigma_{test}$ = test score SD
+
+. . .
+
+$$
+\delta = 0.2 \times 3 = 0.6
+$$
+
+## Step 3: Estimate model with this fixed difference
+
+<br>  
+
+::: {.r-stack}
+::: {.fragment .fade-out fragment-index=1}
+$test_i = \beta_{0(obs)} + \delta miss_i + \beta_1 income_i + \epsilon_i \textcolor[rgb]{1.0,1.0,1.0}{(\delta + )}$
+:::
+
+::: {.fragment fragment-index=1}
+$test_i = \beta_{0(obs)} + 0.6 \times miss_i + \beta_1 income_i + \epsilon_i$
+:::
+:::
+
+- This gives us estimate of $\beta_{0(obs)}$
+
+## Step 4: Compute overall intercept
+
+<br>  
+
+$$
+\beta_0 = \beta_{0(obs)} \times p_{obs} + (\beta_{0(obs)} + \delta) \times p_{miss}
+$$
+
+. . .
+
+- Compare to main imputation/FIML model $\beta_0$ to see sensitivity to MNAR process
+- Check sensitivity to higher/lower effect size differences
+
+## Same process for testing slope sensitivity
+
+$$
+test_i = \beta_0 + \beta_1 treat_i + \beta_2 income_i + \epsilon_i
+$$
+
+. . .
+
+Interact missing indicator w/ variable whose slope you want to test
+
+. . .
+
+\begin{align}
+test_i = & \textcolor[rgb]{0.20,0.70,0.20}{\beta_{0(obs)} + \delta_0 miss_i} + \textcolor[rgb]{0.00,0.00,1.00}{\beta_{1(obs)} treat_i +} \\ 
+& \textcolor[rgb]{0.00,0.00,1.00}{\delta_1 miss_i \times treat_i} + \beta_2 income_i + \epsilon_i
+\end{align}
+
+. . .
+
+$\textcolor[rgb]{0.20,0.70,0.20}{\delta_0}$ = ctrl group, missing vs observed Y mean diff  
+$\textcolor[rgb]{0.00,0.00,1.00}{\delta_1}$ = treat group, missing vs observed ATE diff
+
+## ATE: Diff between new treat & control group mixture means
+
+|       | Observed Mean                                                      | Missing Mean                                                                  |
+| ----- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
+| Ctrl  | $\textcolor[rgb]{0.20,0.70,0.20}{\beta_{0(obs)}}$                  | $\textcolor[rgb]{0.20,0.70,0.20}{\beta_{0(obs)} + \delta_0}$                  |
+| Treat | $\textcolor[rgb]{0.00,0.00,1.00}{\beta_{0(obs)} + \beta_{1(obs)}}$ | $\textcolor[rgb]{0.00,0.00,1.00}{\beta_{0(obs)} + \delta_0 + \beta_{1(obs)} + \delta_1}$ |
+
+. . .
+
+$$
+\textcolor[rgb]{0.20,0.70,0.20}{mean_{ctrl}} = \textcolor[rgb]{0.20,0.70,0.20}{\beta_0} = \textcolor[rgb]{0.20,0.70,0.20}{\beta_{0(obs)} \times p_{0(obs)}} + \textcolor[rgb]{0.20,0.70,0.20}{(\beta_{0(obs)} + \delta_0) \times p_{0(miss)}}
+$$
+
+\begin{align}
+\textcolor[rgb]{0.00,0.00,1.00}{mean_{treat}} = & \textcolor[rgb]{0.00,0.00,1.00}{(\beta_{0(obs)} + \beta_{1(obs)}) \times p_{1(obs)}} + \\ 
+& \textcolor[rgb]{0.00,0.00,1.00}{(\beta_{0(obs)} + \delta_0 + \beta_{1(obs)} + \delta_1) \times p_{1(miss)}}
+\end{align}
+
+. . .
+
+$$
+ATE_{MNAR} = \textcolor[rgb]{0.00,0.00,1.00}{mean_{treat}} - \textcolor[rgb]{0.20,0.70,0.20}{mean_{ctrl}}
+$$
+
+# Conclusion
+
+## None of these methods are perfect
+
+- All make untestable assumptions
+- Important to think carefully about potential missingness mechanisms
+- Take multiple approaches based on different plausible assumptions
+
+. . .
+
+...and let me know if you want some help!

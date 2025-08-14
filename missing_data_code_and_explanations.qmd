@@ -1,0 +1,469 @@
+---
+title: "Missing Data Handling Code & Explanations"
+author: David Loeb
+format: html
+theme: cosmo
+table-of-contents: true
+toc-title: Outline
+code-copy: hover
+embed-resources: true
+highlight-style: atom-one
+---
+
+This document provides code to implement full information maximum likelihood, multiple imputation, and pattern mixture model sensitivity analysis in R. For FIML, I use the `lavaan` package. For multiple imputation and sensitivity analysis, I use the free Blimp software, which I call via the `rblimp` package. Blimp can be downloaded here: [appliedmissingdata.com/blimp](https://www.appliedmissingdata.com/blimp). For all of this code in one script without long explanations, see "Missing_Data_Code.R".
+
+::: {.content-hidden when-format="html"}
+Note: this document is nicer to read via the .html file
+:::
+
+## Data Setup
+
+First I simulate data here. Let's imagine we have an RCT with the following setup:
+
+- Outcome: test score
+- Baseline covariates: income, gender (male: yes or no) & pre-treatment test score
+- We have some missingness in all of our variables (except the treatment assignment indicator)
+
+```{r}
+#| label: setup
+#| message: false
+# Install & load packages
+if (!require("pak")) install.packages("pak")  # installs pak if needed
+pak::pkg_install(  # install/update pkgs if need; does nothing if u have latest
+  c("dplyr", "tibble", "lavaan", "blimp-stats/rblimp", "broom", "ggplot2"),
+  ask = F  # <- change to `ask = T` if u want to be asked to install/update
+)
+library(dplyr)
+
+# Create data
+set.seed(6)
+df <- tibble::tibble(  # create data
+  id = 1:660,
+  income = rnorm(n = 660, mean = 80, sd = 15),
+  male = rbinom(n = 660, size = 1, prob = .5),
+  test_pre = .1 * income + -.5 * male + rnorm(660, mean = 9, sd = 3),
+  treat = c(rep(0, 336), rep(1, 324)),
+  test_post = test_pre + .02 * income + 3 * treat + rnorm(660, mean = 3, sd = 1),
+  miss_covariates = ifelse(  # create missingness
+    percent_rank(.01 * income + rnorm(660, sd = 5)) <= .1, 1, 0
+  ),
+  miss_test_pre = ifelse(
+    percent_rank(treat + rnorm(660, sd = 3)) >= .85, 1, 0
+  ),
+  miss_test_post = ifelse(
+    percent_rank(.2 * test_pre + .5 * treat + rnorm(660)) <= .2, 1, 0
+  )
+) |> 
+  mutate(  # inject missingness
+    income = ifelse(miss_covariates == 1, NA, income),
+    male = ifelse(miss_covariates == 1, NA, male),
+    test_pre = ifelse(miss_test_pre == 1, NA, test_pre),
+    test_post = ifelse(miss_test_post == 1, NA, test_post)
+  )
+```
+
+## FIML
+
+Full information maximum likelihood (FIML) requires the use of structural equation modeling software. In R, that means using the `lavaan` package. This can also be done in Stata via the `sem` command and other software packages like Mplus.
+
+Estimating our regression via FIML is very straightforward in lavaan:
+
+- Use the `sem()` function
+- Supply the regression formula as a character string to the `model =` argument
+- Specify `missing = "fiml.x"` to specify that we want to use FIML
+  - The `fiml.x` is a specific FIML option that specifies we want to include missing predictors in our model (the default FIML would drop observations missing predictors)
+
+To check the results, you can run `summary()` on the model object, or you can use `broom::tidy()` to get the results in a dataframe that's easy to work with.
+
+```{r}
+#| results: false
+mod_fiml <- lavaan::sem(
+  model = "test_post ~ treat + test_pre + income + male",
+  data = df,
+  missing = "fiml.x"
+)
+lavaan::summary(mod_fiml)
+broom::tidy(mod_fiml)
+```
+
+## Multiple Imputation
+
+I call Blimp via the `rblimp` package for multiple imputation. This approach is much more involved than FIML. The first step is to run our Bayesian model. This will yield both Bayesian model results and imputed datasets. For any details on using Blimp beyond what I cover here, see the extremely helpful [user guide](https://www.appliedmissingdata.com/blimp).
+
+### Running the model
+
+We run our model using the `rblimp()` function. Here is a breakdown of the important function components:
+
+- `ordinal =` and `nominal =`, variable delcaration: for binary, ordinal, and multinomial variables, we use these two arguments to tell Blimp what types they are
+  - Binary variables could be specified in either argument and results will be identical, but specifying as `ordinal` is more computationally efficient
+- `fixed =`, fixed variable declaration: for any variables with no missing data, we can declare them as fixed with this argument
+- `model =`, specify model: We provide our model formual as a character string with no plus signs (just spaces between variables)
+  - We specify our main regression equation
+  - And here i've also specified a set of predictor imputation equations, which I discuss more in the "Factored regression" section below
+  - We can give names to the equations to specify the order that they appear in the output - eg here we've named our main equation `focal.model` and our predictor imputation equations `predictor.model`
+- Control feautres of the Bayesian process:
+  - `burn =` specifies the number of burn-in iterations, which are performed to achieve model convergence
+  - `iter =` specifies the number of main model iterations, which begin after the burn-ins are complete
+  - `nimps =` specifies the number of imputed datasets to save. You can also leave this argument out if you don't want to impute datasets and instead are only interested in the Bayesian results
+  - `chains =` specifies the number of different MCMC chains to run. Each thread requires its own burn-in, so adding more chains could increase the models run time. But Blimp can do parallel processing, so it will run multiple chains simultaneously depending on how many CPUs your computer has. It defaults to the max number of chains your computer can handle.
+
+```{r}
+#| results: false
+#| message: false
+mod_imp <- rblimp::rblimp(
+  data = as.data.frame(df),
+  ordinal = "treat male",  # binary or ordinal variables
+  # nominal = ,  # if you have multinomial variables, specify here
+  fixed = "treat",  # variables with no missing data
+  model = paste0(
+    "focal.model: test_post ~ treat test_pre income male; ",
+    "predictor.model: test_pre income male ~ treat;"  # pred imputation mods
+  ),
+  seed = 6,  # random seed
+  burn = 5000,  # number of burn-in iterations (for achieving convergence)
+  iter = 5000,  # number of modeling iterations (for results)
+  nimps = 20,  # number of imputated data sets to save
+  chains = 4  # may want to increase if you have more CPU threads on comp
+)
+```
+
+### Factored regression for predictor imputation
+
+I've specified a "predictor model", with the syntax as follows: `test_pre income male ~ treat;`
+
+This is shortcut code; what I've really done here is specify three different models of cascading regression equations. The "long way" of writing the code would be:
+
+`test_pre ~ income male treat; income ~ male treat; male ~ treat`
+
+This is called "factored regression," an approach to imputing our predictors that breaks up the imputation into a series of sequential regressions. This allows for more flexibility in our imputations and is particularly useful when we have violations of normality. I use this as my default approach, as I've run into convergence issues when trying to take other approaches.
+
+The order in which we specify the variables matters. We want to impute variables with less missingness & that are more categorical in nature earlier (ie specify further to the right), and those with more missingness and that are more continuous later (ie specify further to the left, toward the end of the sequence).
+
+### Imputing interactions & polynomials
+
+If you want to include interactions or polynomials in your main regression equation, all you need to do is multiply them in the equation like so: `y ~ var1 var2 var1*var2`. There is no need to do anything special for these variables in your predictor models; the Bayesian modeling procedure will automatically incorporate the information about these interactions when it imputes these predictor variables.
+
+### Checking Bayesian results
+
+We can check the Bayesian results in two ways. The first is to look at the text of the complete output, by calling the `output()` function on our model result. This is important because it shows us the "PSR," a measure of convergence for each of our parameters. Our highest PSR needs to be < 1.05 (some say < 1.1 is fine) by the end of our burn-in for our model to have converged. This output also shows us detailed results for all of our parameters and models with text elaborations.
+
+If we want to look at just the parameter estimates, we can call the `estimates()` function on our model result. We can even put these in a data frame by calling them through another approach, the `@estimates` method, and wrapping these that in a `data.frame()` call.
+
+Finally, we can check the PSRs for all of our parameters in case we need to trouble shoot convergence issues using the `@psr` method. This returns a data frame of our PSRs across the burn-in iterations.
+
+```{r}
+#| results: false
+rblimp::output(mod_imp)  # or equivalently: mod_imp@output
+rblimp::estimates(mod_imp)
+data.frame(mod_imp@estimates)
+mod_imp@psr
+```
+
+### Extracting imputed datasets
+
+The Blimp model object contains our 20 individual imputed datasets. The easiest way to work with these is to first extract them from the model object into one large dataset. We access the datasets via the `@imputations` method. Then, we typically want to save these datasets so we can continue working with them in the future if needed, but you could also just analyze the imputed datasets immediately without saving them if you are worried about disk space. In the code below, I will save the datasets. 
+
+I like to save imputed datasets as R data objects because they have much smaller file sizes than something like a CSV, so it's a good way to save disk space if you plan to only use them in R. Another great option for a small file size if you want to use the data in programs other than R is a ["parquet" file type](https://parquet.apache.org/), which you create and work with using the [`arrow` package](https://arrow.apache.org/docs/r/). I don't think Stata can work with parquet files yet though, so CSV is probably the way to go if you want to use the data in Stata. (Stata has its own great multiple imputation engine but it is not as powerful or flexible as Blimp.)
+
+```{r}
+# Extract the datasets from the Blimp model object
+df_mult_imp <- purrr::map(
+  1:20,  # iterate over the numbers 1 to 20, which become the `x` below
+  # Extract each imputed dataset and add an imputation ID variable
+  \(x) mod_imp@imputations[[x]] |> mutate(imp_num = x)  
+) |>
+  purrr::list_rbind()  # bind all individual datasets into one large df
+
+# Save
+saveRDS(df_mult_imp, "imputed_data.rds")
+# arrow::write_parquet(df_mult_imp, "imputed_data.parquet")
+# readr::write_csv(df_mult_imp, "imputed_data.csv")
+```
+
+### Analyzing imputed data
+
+The final step is to analyze our imputed data using regular frequentist statistics. We estimate a separate regression model for each individual imputed dataset, and then we combine the results to get our final multiple imputation estimate. For the regression coefficients, we just take the mean across all of the separate model results to get our final coefficient estimate. For the standard error though, we need to incorporate both within- and between-imputation variance. The example below shows how to compute the correct final coefficients, standard errors, and p-values. Note that for hypothesis testing, you must provide model degrees of freedom.
+
+```{r}
+df_mult_imp <- readRDS("imputed_data.rds")  # load saved imputed data if need
+n_imps <- 20
+results_mult_imp <- 1:n_imps |>  # iterate over numbers 1 to 20 (imputations)
+  purrr::map(  # run individual regression models
+    \(x) lm(
+      test_post ~ treat + test_pre + income + male, 
+      data = filter(df_mult_imp, imp_num == x)
+    )
+  ) |> 
+  purrr::map(  # put model results into dataframes & include model degrees frdm
+    \(x) broom::tidy(x) |> mutate(df = df.residual(x))
+  ) |>  
+  purrr::imap(\(x, y) mutate(x, imp_num = y)) |>  # add imputation ID column
+  purrr::list_rbind() |>  # bind into one results dataset
+  mutate(variance = std.error^2) |>  # variance for combining across imputations
+  summarise(  # compute final results for each term
+    .by = term,  # runs the code below for each model variable separately
+    est_final = mean(estimate),  # final regression coef
+    within_imp_var = mean(variance),  # within-imputation variance
+    # Between imputation variance - how much did reg coef vary btwn imputations?
+    btwn_imp_var = (sum((estimate - mean(estimate))^2)) / (n_imps - 1),
+    total_var = within_imp_var + (1 + 1 / n_imps) * btwn_imp_var,  # total var
+    se_final = sqrt(total_var),  # final standard error
+    
+    # Proportion of variance attributed to missing data
+    prop_var_from_missing = (btwn_imp_var + btwn_imp_var / n_imps) / total_var,
+    # Relative increase in variance due to missing data
+    incrs_var_from_missing = (btwn_imp_var + btwn_imp_var / n_imps) 
+      / within_imp_var,
+    
+    # Compute degrees of freedom & p-val for hypothesis test
+    df_old = (n_imps - 1) / prop_var_from_missing,  # old formula for deg. frdm.
+    df_complete = mean(df),  # regular model df if we had complete data
+    # Observed data df that accounts for the missing info
+    df_observed = (df_complete + 1) / (df_complete + 3) * df_complete 
+      * (1 - prop_var_from_missing),
+    # Final df for hypothesis testing
+    df_final = (df_old * df_observed) / (df_old + df_observed),
+    p = (1 - pt(abs(est_final / se_final), df_final)) * 2  # final p-value
+  ) |> 
+  # Move SE and p-val to the front of df
+  relocate(se_final, .after = est_final) |> relocate(p, .after = se_final)
+```
+
+And there you have it! Multiple imputation results 😎
+
+## Sensitivity Analysis: MNAR Pattern Mixture Model
+
+### Setup
+
+This section tests the sensitivity of our treatment effect estimate to having missing not at random (MNAR) data. I've simulated a new RCT scenario where we have a high degree of differential attrition, with the control group more likely to be missing test score outcome data. Also, the data are MNAR, with higher scoring people more likely to attrit. We are only missing outcome data, and our only covariate is income. The treatment has no effect.
+
+```{r}
+set.seed(6)
+df <- tibble::tibble(  # create data
+  id = 1:660,
+  income = rnorm(n = 660, mean = 80, sd = 15),
+  treat = c(rep(0, 336), rep(1, 324)),
+  test_full = .1 * income + rnorm(660, mean = 50, sd = 10),
+  miss_test = ifelse(
+    percent_rank(.3 * test_full + 2.5 * (1 - treat) + rnorm(660, sd = 4)) >= .7,
+    1, 0
+  ),
+  test_obs = ifelse(miss_test == 1, NA, test_full)
+)
+```
+
+Because we are only missing on our outcome, we are going to use listwise deletion as our "main" model against which we will test the sensitivity of our results. We estimate a spurious treatment effect due to bias stemming from the MNAR missing data process.
+
+```{r}
+mod_lwd <- lm(test_obs ~ treat + income, data = df)
+broom::tidy(mod_lwd)
+```
+
+### Sensitivity modeling
+
+We will test the sensitivity of our result to a potential MNAR process with a pattern mixture model in Blimp. The process is as follows:
+
+1. Compute the sample proportions with observed and missing data in each treatment group.
+2. Choose effect size differences for a) the outcome mean for control group members with missing data relative to those with observed data, and b) the treatment effect for those with missing vs observed data.
+    - Then, multiply those by the outcome standard deviation to obtain the regression coefficients for the missing indicator and the missing x treatment indicator that we will fix when we estimate our regression.
+    - We will use the square root of the residual variance from the regression equation as our outcome standard deviation.
+3. Estimate the regression to get the intercept & treatment effect parameter values for those with observed data.
+4. Compute the new treatment and control group mixture means, then take the difference between those means to get the treatment effect estimate under the MNAR assumption.
+
+Steps 2-4 can all be done simultaneously in a single Blimp call. I note each step below; 2 and 3 appear out of order in the Blimp call, which is possible because Blimp uses the MCMC algorithm to estimate each model component in repeated cycles. In a sense, the order in which the model computes its components isn't important since it does these computations cyclically.
+
+There are some important pieces of Blimp syntax to point out. First, we can add labels to variables in our regression model by attaching an `@` symbol to the variable and following that with the label, eg: `var@label`. This allows us to then refer to that variable's coefficient parameter in the `parameters =` argument and perform computations with it. For example, we assign a label to the model intercept with the syntax: `1@int_obs`, where `1` refers to the intercept and `int_obs` is the label. We can then perform calculations with this intercept estimate later in the `parameters =` section.
+
+We can also assign values to those parameters, therefore fixing them to a constant in the regression. For example, we've labeled the parameter for the missing indicator `int_diff`, and in the parameters section, we assign a value to `int_diff`. This means that the missing data indicator will always be multiplied by this value in our regression.
+
+Last, the `~~` syntax specifies a variance (or covariance) between variables. The syntax `test_obs ~~ test_obs` gives us the regression model's residual variance. Again, we label this parameter so that we can use it in calculations in the `parameters =` section.
+
+The final ATE calculations are also done in the `parameters =` section. Using our model intercept and treatment effect estimates, we can calculate the means of each of the four subgroups: a) control group with observed data, b) control group with missing data, c) treatment group with observed data, and d) treatment group with missing data. We can then use the mixture model approach to compute the new overall treatment and control group means, the weighted average of the two missingness subgroup means in each treatment group. Finally, we subtract these two means to get our ATE estimate under the MNAR assumption. It appears in our output as "`Parameter: ate_mnar`".
+
+```{r}
+#| results: false
+# 1. Compute sample proportions with observed and missing data
+# Note: Blimp can't handle more than 9 decimal places, so we need to round
+pct_ctrl_miss <- round(mean(df$miss_test[df$treat == 0]), 9)
+pct_ctrl_obs <- 1 - pct_ctrl_miss
+pct_treat_miss <- round(mean(df$miss_test[df$treat == 1]), 9)
+pct_treat_obs <- 1 - pct_treat_miss
+
+mod_sens <- rblimp::rblimp(  # run sensitivity model
+  data = as.data.frame(df),
+  ordinal = "treat miss_test",
+  fixed = "treat income",
+  model = paste0(  # 3. Regression model
+    "test_obs ~ 1@int_obs miss_test@int_diff ",  # intercept
+      "treat@ate_obs treat*miss_test@ate_diff ",  # treatment effect
+      "income; ",  # covariate
+    # Residual variance for computing fixed regression coefficients
+    "test_obs ~~ test_obs@resid_var; "
+  ),
+  parameters = paste0(
+    # 2. Pre-specify the missing indicator regression coefficients
+    "effect_size_diff_ctrl = .5; ",  # Cohen's D effect size diffs
+    "effect_size_diff_treat = -.1; ",
+    "int_diff = effect_size_diff_ctrl * sqrt(resid_var); ",  # fixed reg coefs
+    "ate_diff = effect_size_diff_treat * sqrt(resid_var); ",
+    
+    # 4. Compute the new ATE under MNAR assumption
+    # Compute means for the 4 subgroups (`int_obs` = observed ctrl group mean)
+    "mean_ctrl_miss = int_obs + int_diff; ",  # missing ctrl group mean
+    "mean_treat_obs = int_obs + ate_obs; ",  # observed treat group mean
+    "mean_treat_miss = mean_ctrl_miss + ate_obs + ate_diff; ",  # miss treat mean
+    # Compute overall MNAR mixture treatment & control group means
+    "mean_ctrl = int_obs *", pct_ctrl_obs,  # control group
+      "+ mean_ctrl_miss *", pct_ctrl_miss, "; ",
+    "mean_treat = mean_treat_obs *", pct_treat_obs,  # treatment group
+      "+ mean_treat_miss *", pct_treat_miss, "; ",
+    # Compute new ATE
+    "ate_mnar = mean_treat - mean_ctrl; "
+  ),
+  seed = 6,
+  burn = 5000,
+  iter = 5000
+)
+
+mod_sens@estimates
+```
+
+### Testing sensitivity across a range of differences
+
+We want to test sensitivity of our estimates under a range of specified effect size differences. We can wrap our `rblimp()` model in a function that takes the effect size differences as its inputs and iterate across the entire range of effect size combinations we are interested in testing. I've set up the function to return just the new MNAR ATE estimate (in a single row dataframe), but you could return the full set of results if you're interested. 
+
+I then create a dataframe with two columns, the treatment and control group effect size differences, to use as inputs to the function. We iterate over the rows of this dataframe to compute the new MNAR ATE with each combination of effect size differences. 
+
+```{r}
+#| results: false
+# Set up the modeling function
+test_mnar_sensitivity <- function(d_ctrl, d_treat) {
+  mod_sens <- rblimp::rblimp(
+    data = as.data.frame(df),
+    ordinal = "treat miss_test",
+    fixed = "treat income",
+    model = paste0(  # Regression model
+      "test_obs ~ 1@int_obs miss_test@int_diff ",  # intercept
+        "treat@ate_obs treat*miss_test@ate_diff ",  # treatment effect
+        "income; ",  # covariate
+      "test_obs ~~ test_obs@resid_var; "  # residual variance
+    ),
+    parameters = paste0(
+      # Pre-specify the missing indicator regression coefficients
+      "effect_size_diff_ctrl = ", d_ctrl, "; ",  # Cohen's D effect size diffs
+      "effect_size_diff_treat = ", d_treat, "; ",
+      "int_diff = effect_size_diff_ctrl * sqrt(resid_var); ",  # fixed reg coefs
+      "ate_diff = effect_size_diff_treat * sqrt(resid_var); ",
+      
+      # Compute the new ATE under MNAR assumption
+      "mean_ctrl_miss = int_obs + int_diff; ",  # missing ctrl group mean
+      "mean_treat_obs = int_obs + ate_obs; ",  # observed treat group mean
+      "mean_treat_miss = mean_ctrl_miss + ate_obs + ate_diff; ",  # miss treat mean
+      
+      "mean_ctrl = int_obs *", pct_ctrl_obs,  # control group
+        "+ mean_ctrl_miss *", pct_ctrl_miss, "; ",
+      "mean_treat = mean_treat_obs *", pct_treat_obs,  # treatment group
+        "+ mean_treat_miss *", pct_treat_miss, "; ",
+      
+      "ate_mnar = mean_treat - mean_ctrl; "
+    ),
+    seed = 6,
+    burn = 5000,
+    iter = 5000
+  )
+  data.frame(mod_sens@estimates)["Parameter: ate_mnar", ]
+}
+
+# Create the effect size df to use as input to the function
+#* I look at each combination of chosen effect size diffs for a) missing vs 
+#* observed data control group members and b) ATE diffs for people with 
+#* missing vs observed data. I look at the range of effect size differences 
+#* between -1 and 1 in increments of .25 for the control group effect size 
+#* diffs, and between -.5 and .5 in .25 increments for the ATE diffs.
+eff_sizes <- tidyr::expand_grid(
+  d_ctrl = seq(-1, 1, by = .25),
+  d_treat = seq(-.5, .5, by = .25)
+)
+
+# Run function across each row of the df; bind results into one final df
+# & add effect size difference specification columns to these results.
+results_sens <- purrr::pmap(eff_sizes, ~ test_mnar_sensitivity(..1, ..2)) |> 
+  purrr::list_rbind() |> 
+  bind_cols(eff_sizes)
+
+# Adjust ctrl effect size diff values so they are not overlapping on plot 
+#* To explain: we will plot the control group mean outcome effect size diffs 
+#* on the x-axis. Since we have 5 ATE effect size diffs that we've tested at
+#* each control group effect size diff, those points will overlap. Here we are 
+#* basically hard-coding "jitter" into our plot so those points don't overlap.
+results_sens <- results_sens |> 
+  mutate(
+    d_ctrl_plot = case_when(
+      d_treat == -.5 ~ d_ctrl - .05,
+      d_treat == -.25 ~ d_ctrl - .025,
+      d_treat == 0 ~ d_ctrl,
+      d_treat == .25 ~ d_ctrl + .025,
+      d_treat == .5 ~ d_ctrl + .05
+    ),
+    # To change order on legend
+    d_treat = factor(d_treat, levels = c(.5, .25, 0, -.25, -.5))
+  )
+```
+
+### Plotting results
+
+Since we have so many results, I think the easiest way to check them is to plot the ATEs as points with error bars. This allows us to see things like the point at which our results become non-significant, and the point at which our ATE estimate hits 0.
+
+```{r}
+library(ggplot2)
+#* The `showtext` and `sysfonts` pkg functions enable use of Roboto font; this 
+#* is optional. If you want to use Roboto, you need to install those packages.
+#* Otherwise, delete `family = "Roboto"` from the `theme(text = )` argument.
+showtext::showtext_auto()
+showtext::showtext_opts(dpi = 600)
+sysfonts::font_add_google("Roboto", family = "Roboto")
+ggplot(results_sens, aes(d_ctrl_plot, Estimate, color = d_treat)) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = `X2.5.`, ymax = `X97.5.`), width = .05) +
+  guides(
+    color = guide_legend(
+      "ATE Effect Size Diff\nfor People With\nMissing vs Observed\nData"
+    )
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(family = "Roboto", size = 12),
+    panel.grid = element_blank(),
+    plot.title = element_text(hjust = .5),
+    plot.subtitle = element_text(hjust = .5),
+    plot.caption = element_text(hjust = 0, size = 8)
+  ) +
+  geom_hline(yintercept = 0, lty = "dashed") +
+  xlab(paste0(
+    "Outcome Effect Size Diff for Control Group Members",
+    "\nWith Missing vs Observed Data"
+  )) +
+  ylab("ATE") + 
+  labs(
+    title = "ATE Estimates Under MNAR Assumptions",
+    subtitle = paste0(
+      "Results are sensitive to people with missing data scoring",
+      "\n.25 SDs higher than those with observed data on average,",
+      "\nor having treatment effects .25 SDs smaller on average."
+    ),
+    caption = paste0(
+      "Note: jitter was added to x-axis to ease visualization; all points ",
+      "grouped together on\nx-axis fall on the same x-value, i.e. the numbers ",
+      "between -1 and 1 in increments of 0.25."
+    )
+  ) +
+  annotate(
+    "segment", x = -.04, y = 5, xend = -.01, yend = 3.6751 + .15,
+    arrow = arrow(type = "closed", length = unit(.02, "npc"))
+  ) +
+  annotate(
+    "text", x = .2, y = 5.4, label = "Primary model result",
+    size = 4, family = "Roboto"
+  )
+```
+
