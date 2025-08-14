@@ -1,5 +1,5 @@
 ---
-title: "Modern Missing Data Handling for Policy Research & RCTs"
+title: "Missing Data Handling for Policy Research & RCTs"
 author: "David Loeb<br>loebd@upenn.edu"
 date: "May 12, 2025"
 date-format: long
