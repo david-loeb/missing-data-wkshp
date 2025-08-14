@@ -852,7 +852,7 @@ Negatives
 - Means & variances biased unless data are MCAR
 - If missing X depends on Y: Reg coefs biased
 
-Check out [this tool](http://s9l7w2-david-loeb.shinyapps.io/missing-data/) for more RCT scenarios
+Check out [this tool](https://davidloeb-missing-data-app.share.connect.posit.cloud/) for more RCT scenarios
 
 :::
 
@@ -1714,7 +1714,7 @@ tibble(
 
 - Always important to consider potential missingness mechanisms
 - Best to take multiple approaches and test sensitivity of results
-- For help thinking through approaches in RCTs, check out [this tool](http://s9l7w2-david-loeb.shinyapps.io/missing-data/)
+- For help thinking through approaches in RCTs, check out [this tool](https://davidloeb-missing-data-app.share.connect.posit.cloud/)
 
 # Sensitivity Analysis
 
