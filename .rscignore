@@ -2,3 +2,4 @@ missing_data_code.R
 missing_data_code_and_explanations.qmd
 README.md
 .gitignore
+.DS_Store
