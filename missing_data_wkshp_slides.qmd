@@ -26,7 +26,7 @@ pacman::p_load(dplyr, gt, ggplot2, tidyr, plotly, flextable, gfonts)
 showtext::showtext_auto()
 # dpi = 300 required for correct text size to appear on web-hosted version
 # I set dpi = 600 when rendering locally
-showtext::showtext_opts(dpi = 300)
+showtext::showtext_opts(dpi = 250)
 sysfonts::font_add("roboto", "slides_files/Roboto-Medium.ttf")
 gdtools::register_gfont(family = "Roboto")
 source("slides_files/create_data_pres.R")
