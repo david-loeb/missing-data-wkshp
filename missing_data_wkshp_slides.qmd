@@ -22,7 +22,7 @@ html-math-method:
 ```{r}
 #| label: setup
 #| include: false
-pacman::p_load(dplyr, gt, ggplot2, tidyr, plotly, flextable)
+pacman::p_load(dplyr, gt, ggplot2, tidyr, plotly, flextable, gfonts)
 showtext::showtext_auto()
 showtext::showtext_opts(dpi = 600)
 sysfonts::font_add("roboto", "slides_files/Roboto-Medium.ttf")
