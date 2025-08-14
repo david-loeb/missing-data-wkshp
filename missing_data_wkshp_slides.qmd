@@ -24,9 +24,9 @@ html-math-method:
 #| include: false
 pacman::p_load(dplyr, gt, ggplot2, tidyr, plotly, flextable, gfonts)
 showtext::showtext_auto()
-# dpi = 130 required for correct text size to appear on web-hosted version
+# dpi = 300 required for correct text size to appear on web-hosted version
 # I set dpi = 600 when rendering locally
-showtext::showtext_opts(dpi = 130)
+showtext::showtext_opts(dpi = 300)
 sysfonts::font_add("roboto", "slides_files/Roboto-Medium.ttf")
 gdtools::register_gfont(family = "Roboto")
 source("slides_files/create_data_pres.R")
