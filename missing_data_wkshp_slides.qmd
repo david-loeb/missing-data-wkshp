@@ -6,10 +6,9 @@ date-format: long
 format: 
   revealjs:
     reference-location: document
-    # chalkboard:  # uncomment to use chalkboard; must set embed-resources: false
-    #  buttons: false  # uncomment if using chalkboard
+    chalkboard:
+      buttons: false
     preview-links: true
-    embed-resources: true  # comment out if using chalkboard
 language:
   en:
     section-title-footnotes: "References"
@@ -152,9 +151,7 @@ ggplot(df_plt, aes(Group, y)) +
 :::
 :::
 
-## Types of missingness {.smaller .scrollable}
-
-<!-- Note: if using chalkboard, add this to the header options above: chalkboard-buttons="true" -->
+## Types of missingness {.smaller .scrollable chalkboard-buttons="true"}
 
 ::: {.panel-tabset}
 
@@ -1403,9 +1400,7 @@ plt_mv_curve
 - We can still compute a likelihood for a person even if they are missing some data
 - We use only their observed data
 
-## Partial data helps accuracy
-
-<!-- Note: if using chalkboard, add this next to the header above: {chalkboard-buttons="true"} -->
+## Partial data helps accuracy {chalkboard-buttons="true"}
 
 <br>  
 
