@@ -1,0 +1,27 @@
+.title {
+  font-size: 80px !important;
+}
+
+.subtitle {
+  font-size: 60px;
+}
+
+.center h1 {
+  text-align: center;
+}
+
+.center h2 {
+  text-align: center;
+}
+
+.panel-tabset-tabby a {
+  font-size: 25px;
+}
+
+.footnotes ol {
+  font-size: .8em;
+}
+
+.modebar {
+  right: 512px !important;
+}
